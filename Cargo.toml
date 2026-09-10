@@ -1,0 +1,6 @@
+[workspace]
+members = [
+    "helix-cli",
+    "helix-core",
+]
+resolver = "2"

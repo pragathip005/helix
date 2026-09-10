@@ -1,0 +1,33 @@
+[package]
+name = "helix-core"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+# Database
+sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "postgres", "macros"] }
+tokio = { version = "1", features = ["full"] }
+
+# SQL parsing
+sqlparser = "0.43"
+
+# Serialization
+serde    = { version = "1", features = ["derive"] }
+bincode  = "1"
+
+# Hashing
+sha2 = "0.10"
+hex  = "0.4"
+
+# Error handling
+thiserror = "1"
+anyhow    = "1"
+
+# Config
+toml = "0.8"
+
+# Terminal output
+colored = "2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full", "test-util"] }

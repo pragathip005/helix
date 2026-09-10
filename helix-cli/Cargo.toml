@@ -1,0 +1,15 @@
+[package]
+name = "helix-cli"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "helix"
+path = "src/main.rs"
+
+[dependencies]
+helix-core = { path = "../helix-core" }
+clap       = { version = "4", features = ["derive"] }
+tokio      = { version = "1", features = ["full"] }
+anyhow     = "1"
+dotenvy    = "0.15"
