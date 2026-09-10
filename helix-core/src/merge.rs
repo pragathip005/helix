@@ -125,6 +125,14 @@ pub fn merge_schemas(base: &Schema, ours: &Schema, theirs: &Schema) -> MergeResu
         }
     }
 
+    if conflicts.is_empty() {
+        tracing::info!(tables = tables.len(), "merge completed with no conflicts");
+    } else {
+        for conflict in &conflicts {
+            tracing::warn!(conflict = %conflict.description, "merge conflict");
+        }
+    }
+
     MergeResult { schema: Schema { tables }, conflicts }
 }
 

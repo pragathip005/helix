@@ -50,6 +50,7 @@ pub fn init(database_url: &str) -> Result<()> {
     );
     fs::write(helix_dir.join("config.toml"), config)?;
 
+    tracing::info!("initialized Helix repository");
     println!("Initialized Helix repository.");
     Ok(())
 }

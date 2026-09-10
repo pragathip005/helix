@@ -5,12 +5,26 @@ use std::collections::HashMap;
 
 use crate::types::{Column, Constraint, ConstraintKind, Index, Schema, Table};
 
+/// Mask the `user:password@` portion of a connection URL so it's safe to log —
+/// `database_url` carries a live Postgres password and must never reach a log line
+/// in full.
+fn redact_credentials(url: &str) -> String {
+    match (url.find("://"), url.find('@')) {
+        (Some(scheme_end), Some(at)) if at > scheme_end => {
+            format!("{}://***@{}", &url[..scheme_end], &url[at + 1..])
+        }
+        _ => "***".to_string(),
+    }
+}
+
 /// Open a connection pool to the given Postgres database.
 pub async fn connect(database_url: &str) -> Result<PgPool> {
+    tracing::debug!(url = %redact_credentials(database_url), "connecting to database");
     let pool = PgPoolOptions::new()
         .max_connections(5)
         .connect(database_url)
-        .await?;
+        .await
+        .inspect_err(|err| tracing::error!(error = %err, "failed to connect to database"))?;
     Ok(pool)
 }
 
@@ -19,12 +33,14 @@ pub async fn connect(database_url: &str) -> Result<PgPool> {
 /// Every catalog query runs inside a single REPEATABLE READ transaction so the
 /// snapshot is consistent even if another session changes the schema concurrently.
 pub async fn extract_schema(pool: &PgPool) -> Result<Schema> {
+    tracing::debug!("starting schema extraction");
     let mut tx = pool.begin().await?;
     sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
         .execute(&mut *tx)
         .await?;
 
     let table_names = fetch_table_names(&mut tx).await?;
+    tracing::debug!(tables = table_names.len(), "fetched table list");
     let mut columns = fetch_columns(&mut tx).await?;
     let mut primary_keys = fetch_key_constraints(&mut tx, "PRIMARY KEY").await?;
     let mut uniques = fetch_key_constraints(&mut tx, "UNIQUE").await?;
@@ -33,6 +49,7 @@ pub async fn extract_schema(pool: &PgPool) -> Result<Schema> {
     let mut indexes = fetch_indexes(&mut tx).await?;
 
     tx.commit().await?;
+    tracing::info!(tables = table_names.len(), "schema extraction complete");
 
     let tables = table_names
         .into_iter()
@@ -194,15 +211,19 @@ async fn fetch_foreign_keys(tx: &mut Transaction<'_, Postgres>) -> Result<HashMa
     Ok(by_table)
 }
 
+/// Queries `pg_constraint` directly rather than `information_schema.check_constraints`:
+/// the standard information_schema views synthesize a CHECK-typed row for every plain
+/// `NOT NULL` column (per the SQL standard), which would otherwise show up here as a
+/// phantom constraint — `pg_constraint` only has an entry for a genuine named CHECK.
 async fn fetch_check_constraints(tx: &mut Transaction<'_, Postgres>) -> Result<HashMap<String, Vec<Constraint>>> {
     let rows = sqlx::query(
-        "SELECT tc.table_name, tc.constraint_name, cc.check_clause \
-         FROM information_schema.table_constraints tc \
-         JOIN information_schema.check_constraints cc \
-           ON tc.constraint_name = cc.constraint_name \
-          AND tc.constraint_schema = cc.constraint_schema \
-         WHERE tc.table_schema = 'public' AND tc.constraint_type = 'CHECK' \
-         ORDER BY tc.table_name, tc.constraint_name",
+        "SELECT t.relname AS table_name, c.conname AS constraint_name, \
+                pg_get_expr(c.conbin, c.conrelid) AS check_clause \
+         FROM pg_constraint c \
+         JOIN pg_class t ON t.oid = c.conrelid \
+         JOIN pg_namespace n ON n.oid = t.relnamespace \
+         WHERE n.nspname = 'public' AND c.contype = 'c' \
+         ORDER BY t.relname, c.conname",
     )
     .fetch_all(&mut **tx)
     .await?;

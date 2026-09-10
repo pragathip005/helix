@@ -69,18 +69,26 @@ pub fn create_commit(schema: &Schema, message: &str) -> Result<String> {
 
     let branch = current_branch()?;
     fs::write(branch_ref_path(&branch), format!("{commit_hash}\n"))?;
+    tracing::info!(commit = %commit_hash, branch, "created commit");
 
     Ok(commit_hash)
 }
 
+/// The commit hash a named branch currently points at.
+///
+/// Validates `branch` before it ever touches the filesystem — this is the one safe
+/// entry point for turning a CLI-supplied branch name into a path read, used by every
+/// caller (including `resolve_schema` below) instead of joining the raw name in directly.
+pub fn branch_head_hash(branch: &str) -> Result<String> {
+    crate::branch::validate_branch_name(branch)?;
+    let path = branch_ref_path(branch);
+    let contents = fs::read_to_string(&path).map_err(|_| anyhow::anyhow!("branch '{branch}' does not exist"))?;
+    Ok(contents.trim().to_string())
+}
+
 /// Resolve a branch name or commit hash to the `Schema` it points at.
 pub fn resolve_schema(reference: &str) -> Result<Schema> {
-    let branch_path = branch_ref_path(reference);
-    let commit_hash = if branch_path.exists() {
-        fs::read_to_string(&branch_path)?.trim().to_string()
-    } else {
-        reference.to_string()
-    };
+    let commit_hash = branch_head_hash(reference).unwrap_or_else(|_| reference.to_string());
     let commit = load_commit(&commit_hash)
         .with_context(|| format!("'{reference}' is not a known branch or commit"))?;
     load_schema(&commit.schema_hash)
