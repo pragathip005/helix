@@ -1,3 +1,7 @@
 /target
 .env
 *.orig
+
+# Helix's own local repository state — contains the database URL (with credentials)
+# in config.toml, and is tool-managed local state, not source to commit.
+.helix/

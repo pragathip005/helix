@@ -23,6 +23,9 @@ hex  = "0.4"
 thiserror = "1"
 anyhow    = "1"
 
+# Logging
+tracing = "0.1"
+
 # Config
 toml = "0.8"
 

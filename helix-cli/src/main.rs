@@ -48,8 +48,22 @@ enum Commands {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // RUST_LOG=debug (or helix_core=debug, etc. — see KICKSTART §12) controls verbosity.
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_target(false)
+        .init();
+
     dotenvy::dotenv().ok();
 
+    if let Err(err) = run().await {
+        tracing::error!(error = %err, "command failed");
+        return Err(err);
+    }
+    Ok(())
+}
+
+async fn run() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
@@ -128,10 +142,7 @@ async fn main() -> Result<()> {
             let current_branch = helix_core::commit::current_branch()?;
             let ours_hash = helix_core::commit::head_commit_hash()?
                 .ok_or_else(|| anyhow::anyhow!("no commits yet on '{current_branch}'"))?;
-            let theirs_hash = std::fs::read_to_string(helix_core::commit::branch_ref_path(&name))
-                .map_err(|_| anyhow::anyhow!("branch '{name}' does not exist"))?
-                .trim()
-                .to_string();
+            let theirs_hash = helix_core::commit::branch_head_hash(&name)?;
 
             let lca = helix_core::merge::find_lca(&ours_hash, &theirs_hash)?
                 .ok_or_else(|| anyhow::anyhow!("no common ancestor between '{current_branch}' and '{name}'"))?;

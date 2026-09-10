@@ -1,0 +1,26 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: helix
+      POSTGRES_PASSWORD: helix
+      POSTGRES_DB: helix_dev
+    ports:
+      - "5433:5432"
+    volumes:
+      - helix_pg_data:/var/lib/postgresql/data
+      - ./tests/fixtures/seed.sql:/docker-entrypoint-initdb.d/seed.sql
+
+  postgres_test:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: helix_test
+      POSTGRES_PASSWORD: helix_test
+      POSTGRES_DB: helix_test
+    ports:
+      - "5434:5432"
+    tmpfs:
+      - /var/lib/postgresql/data
+
+volumes:
+  helix_pg_data:
