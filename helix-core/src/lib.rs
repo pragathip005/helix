@@ -7,7 +7,8 @@ pub mod snapshot;
 pub mod store;
 pub mod types;
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
+use serde::Deserialize;
 use std::fs;
 use std::path::Path;
 use thiserror::Error;
@@ -51,4 +52,27 @@ pub fn init(database_url: &str) -> Result<()> {
 
     println!("Initialized Helix repository.");
     Ok(())
+}
+
+#[derive(Debug, Deserialize)]
+struct ConfigFile {
+    database: DatabaseConfig,
+}
+
+#[derive(Debug, Deserialize)]
+struct DatabaseConfig {
+    url: String,
+}
+
+/// Read the database URL out of `.helix/config.toml`.
+pub fn database_url() -> Result<String> {
+    let helix_dir = Path::new(".helix");
+    if !helix_dir.exists() {
+        bail!("not a Helix repository — run `helix init` first");
+    }
+
+    let contents = fs::read_to_string(helix_dir.join("config.toml"))
+        .context("failed to read .helix/config.toml")?;
+    let config: ConfigFile = toml::from_str(&contents).context("failed to parse .helix/config.toml")?;
+    Ok(config.database.url)
 }

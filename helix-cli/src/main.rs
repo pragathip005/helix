@@ -1,5 +1,7 @@
-use anyhow::Result;
+use anyhow::{bail, Result};
 use clap::{Parser, Subcommand};
+use colored::Colorize;
+use helix_core::types::DiffOp;
 
 #[derive(Parser)]
 #[command(name = "helix", about = "Git for database schemas", version)]
@@ -41,10 +43,7 @@ enum Commands {
     /// Merge a branch into the current branch
     Merge { name: String },
     /// Export a SQL migration from the diff between two branches
-    ExportMigration {
-        from: String,
-        to: String,
-    },
+    ExportMigration { from: String, to: String },
 }
 
 #[tokio::main]
@@ -57,31 +56,155 @@ async fn main() -> Result<()> {
         Commands::Init { database_url } => {
             helix_core::init(&database_url)?;
         }
-        Commands::Commit { message: _ } => {
-            todo!("Story 2.4")
+        Commands::Commit { message } => {
+            let schema = live_schema().await?;
+            let head_schema = head_schema_or_empty()?;
+
+            if helix_core::diff::diff_schemas(&head_schema, &schema).is_empty() {
+                println!("nothing to commit, working tree clean");
+                return Ok(());
+            }
+
+            let hash = helix_core::commit::create_commit(&schema, &message)?;
+            println!("[{}] {}", &hash[..8], message);
         }
         Commands::Log => {
-            todo!("Story 2.5")
+            let history = helix_core::commit::log()?;
+            if history.is_empty() {
+                println!("No commits yet.");
+            }
+            for (hash, commit) in history {
+                println!("{} {}", format!("commit {hash}").yellow(), "");
+                println!("Date: {}", commit.timestamp);
+                println!("\n    {}\n", commit.message);
+            }
         }
         Commands::Status => {
-            todo!("Story 1.6")
+            let branch = helix_core::commit::current_branch()?;
+            println!("On branch {branch}");
+
+            if helix_core::commit::head_commit_hash()?.is_none() {
+                println!("No commits yet.\n");
+            }
+            let head_schema = head_schema_or_empty()?;
+            let live = live_schema().await?;
+            let ops = helix_core::diff::diff_schemas(&head_schema, &live);
+            if ops.is_empty() {
+                println!("Nothing to commit, working tree clean.");
+            } else {
+                println!("Changes not yet committed:");
+                print_diff(&ops);
+            }
         }
-        Commands::Diff { target: _, target2: _ } => {
-            todo!("Story 3.8")
+        Commands::Diff { target, target2 } => {
+            let (old, new) = match (target, target2) {
+                (None, None) => (head_schema_or_empty()?, live_schema().await?),
+                (Some(t), None) => (helix_core::commit::resolve_schema(&t)?, live_schema().await?),
+                (Some(t1), Some(t2)) => {
+                    (helix_core::commit::resolve_schema(&t1)?, helix_core::commit::resolve_schema(&t2)?)
+                }
+                (None, Some(_)) => bail!("a second diff target requires a first one too"),
+            };
+            print_diff(&helix_core::diff::diff_schemas(&old, &new));
         }
-        Commands::Branch { name: _ } => {
-            todo!("Story 4.1 / 4.2")
+        Commands::Branch { name } => match name {
+            None => {
+                let current = helix_core::commit::current_branch()?;
+                for (branch, hash) in helix_core::branch::list()? {
+                    let marker = if branch == current { "*".green() } else { " ".normal() };
+                    println!("{marker} {branch} ({})", &hash[..8.min(hash.len())]);
+                }
+            }
+            Some(name) => {
+                helix_core::branch::create(&name)?;
+                println!("Created branch '{name}'");
+            }
+        },
+        Commands::Checkout { name } => {
+            helix_core::branch::checkout(&name)?;
+            println!("Switched to branch '{name}'");
         }
-        Commands::Checkout { name: _ } => {
-            todo!("Story 4.3")
+        Commands::Merge { name } => {
+            let current_branch = helix_core::commit::current_branch()?;
+            let ours_hash = helix_core::commit::head_commit_hash()?
+                .ok_or_else(|| anyhow::anyhow!("no commits yet on '{current_branch}'"))?;
+            let theirs_hash = std::fs::read_to_string(helix_core::commit::branch_ref_path(&name))
+                .map_err(|_| anyhow::anyhow!("branch '{name}' does not exist"))?
+                .trim()
+                .to_string();
+
+            let lca = helix_core::merge::find_lca(&ours_hash, &theirs_hash)?
+                .ok_or_else(|| anyhow::anyhow!("no common ancestor between '{current_branch}' and '{name}'"))?;
+
+            let base = helix_core::commit::load_schema(&helix_core::commit::load_commit(&lca)?.schema_hash)?;
+            let ours = helix_core::commit::load_schema(&helix_core::commit::load_commit(&ours_hash)?.schema_hash)?;
+            let theirs = helix_core::commit::load_schema(&helix_core::commit::load_commit(&theirs_hash)?.schema_hash)?;
+
+            let result = helix_core::merge::merge_schemas(&base, &ours, &theirs);
+            if !result.is_clean() {
+                println!("{}", "Automatic merge failed; fix conflicts and commit manually:".red());
+                for conflict in &result.conflicts {
+                    println!("  {} {}", "CONFLICT".red().bold(), conflict.description);
+                }
+                bail!("merge aborted — {} conflict(s)", result.conflicts.len());
+            }
+
+            let message = format!("Merge branch '{name}' into {current_branch}");
+            let hash = helix_core::commit::create_commit(&result.schema, &message)?;
+            println!("Merge made ({}). {}", &hash[..8], message);
         }
-        Commands::Merge { name: _ } => {
-            todo!("Story 5.5")
-        }
-        Commands::ExportMigration { from: _, to: _ } => {
-            todo!("Story 6.3")
+        Commands::ExportMigration { from, to } => {
+            let old = helix_core::commit::resolve_schema(&from)?;
+            let new = helix_core::commit::resolve_schema(&to)?;
+            let ops = helix_core::diff::diff_schemas(&old, &new);
+            let statements = helix_core::migrate::to_sql(&ops);
+
+            println!("-- Migration: {from} -> {to}");
+            for statement in statements {
+                println!("{statement}");
+            }
         }
     }
 
     Ok(())
+}
+
+async fn live_schema() -> Result<helix_core::types::Schema> {
+    let database_url = helix_core::database_url()?;
+    let pool = helix_core::snapshot::connect(&database_url).await?;
+    helix_core::snapshot::extract_schema(&pool).await
+}
+
+fn head_schema_or_empty() -> Result<helix_core::types::Schema> {
+    match helix_core::commit::head_commit_hash()? {
+        Some(hash) => Ok(helix_core::commit::load_schema(&helix_core::commit::load_commit(&hash)?.schema_hash)?),
+        None => Ok(helix_core::types::Schema { tables: vec![] }),
+    }
+}
+
+fn print_diff(ops: &[DiffOp]) {
+    if ops.is_empty() {
+        println!("No changes.");
+        return;
+    }
+    for op in ops {
+        match op {
+            DiffOp::AddTable { name, .. } => println!("  {} table {name}", "+".green()),
+            DiffOp::DropTable { name } => println!("  {} table {name}", "-".red()),
+            DiffOp::AddColumn { table, column } => println!("  {} {table}.{}", "+".green(), column.name),
+            DiffOp::DropColumn { table, column_name } => println!("  {} {table}.{column_name}", "-".red()),
+            DiffOp::RenameColumn { table, from, to } => {
+                println!("  {} {table}.{from} \u{21b7} {table}.{to}", "~".yellow())
+            }
+            DiffOp::ModifyColumn { table, column_name, .. } => println!("  {} {table}.{column_name}", "~".yellow()),
+            DiffOp::AddConstraint { table, constraint } => {
+                println!("  {} constraint {} on {table}", "+".green(), constraint.name)
+            }
+            DiffOp::DropConstraint { table, constraint_name } => {
+                println!("  {} constraint {constraint_name} on {table}", "-".red())
+            }
+            DiffOp::AddIndex { table, index } => println!("  {} index {} on {table}", "+".green(), index.name),
+            DiffOp::DropIndex { table, index_name } => println!("  {} index {index_name} on {table}", "-".red()),
+        }
+    }
 }
