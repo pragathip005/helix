@@ -18,17 +18,29 @@ pub fn to_sql(ops: &[DiffOp]) -> Vec<String> {
     for op in ops {
         match op {
             DiffOp::AddTable { table, .. } => {
-                creates.push(create_table_sql(table.name.as_str(), &table.columns, &table.constraints));
+                creates.push(create_table_sql(
+                    table.name.as_str(),
+                    &table.columns,
+                    &table.constraints,
+                ));
                 foreign_keys.extend(foreign_key_sql(&table.name, &table.constraints));
             }
             DiffOp::DropTable { name } => {
                 drops.push(format!("DROP TABLE {};", quote_ident(name)));
             }
             DiffOp::AddColumn { table, column } => {
-                creates.push(format!("ALTER TABLE {} ADD COLUMN {};", quote_ident(table), column_def_sql(column)));
+                creates.push(format!(
+                    "ALTER TABLE {} ADD COLUMN {};",
+                    quote_ident(table),
+                    column_def_sql(column)
+                ));
             }
             DiffOp::DropColumn { table, column_name } => {
-                drops.push(format!("ALTER TABLE {} DROP COLUMN {};", quote_ident(table), quote_ident(column_name)));
+                drops.push(format!(
+                    "ALTER TABLE {} DROP COLUMN {};",
+                    quote_ident(table),
+                    quote_ident(column_name)
+                ));
             }
             DiffOp::RenameColumn { table, from, to } => {
                 renames.push(format!(
@@ -38,7 +50,11 @@ pub fn to_sql(ops: &[DiffOp]) -> Vec<String> {
                     quote_ident(to)
                 ));
             }
-            DiffOp::ModifyColumn { table, column_name, change } => {
+            DiffOp::ModifyColumn {
+                table,
+                column_name,
+                change,
+            } => {
                 modifies.extend(modify_column_sql(table, column_name, change));
             }
             DiffOp::AddConstraint { table, constraint } => {
@@ -54,7 +70,10 @@ pub fn to_sql(ops: &[DiffOp]) -> Vec<String> {
                     creates.push(sql);
                 }
             }
-            DiffOp::DropConstraint { table, constraint_name } => {
+            DiffOp::DropConstraint {
+                table,
+                constraint_name,
+            } => {
                 drops.push(format!(
                     "ALTER TABLE {} DROP CONSTRAINT {};",
                     quote_ident(table),
@@ -86,9 +105,17 @@ fn create_table_sql(name: &str, columns: &[Column], constraints: &[Constraint]) 
         if matches!(constraint.kind, ConstraintKind::ForeignKey { .. }) {
             continue;
         }
-        lines.push(format!("CONSTRAINT {} {}", quote_ident(&constraint.name), constraint_def_sql(&constraint.kind)));
+        lines.push(format!(
+            "CONSTRAINT {} {}",
+            quote_ident(&constraint.name),
+            constraint_def_sql(&constraint.kind)
+        ));
     }
-    format!("CREATE TABLE {} (\n    {}\n);", quote_ident(name), lines.join(",\n    "))
+    format!(
+        "CREATE TABLE {} (\n    {}\n);",
+        quote_ident(name),
+        lines.join(",\n    ")
+    )
 }
 
 fn foreign_key_sql(table: &str, constraints: &[Constraint]) -> Vec<String> {
@@ -137,9 +164,15 @@ fn sql_type(column: &Column) -> String {
 
 fn constraint_def_sql(kind: &ConstraintKind) -> String {
     match kind {
-        ConstraintKind::PrimaryKey { columns } => format!("PRIMARY KEY ({})", quote_idents(columns)),
+        ConstraintKind::PrimaryKey { columns } => {
+            format!("PRIMARY KEY ({})", quote_idents(columns))
+        }
         ConstraintKind::Unique { columns } => format!("UNIQUE ({})", quote_idents(columns)),
-        ConstraintKind::ForeignKey { columns, ref_table, ref_columns } => format!(
+        ConstraintKind::ForeignKey {
+            columns,
+            ref_table,
+            ref_columns,
+        } => format!(
             "FOREIGN KEY ({}) REFERENCES {} ({})",
             quote_idents(columns),
             quote_ident(ref_table),
@@ -149,7 +182,11 @@ fn constraint_def_sql(kind: &ConstraintKind) -> String {
     }
 }
 
-fn modify_column_sql(table: &str, column_name: &str, change: &crate::types::ColumnChange) -> Vec<String> {
+fn modify_column_sql(
+    table: &str,
+    column_name: &str,
+    change: &crate::types::ColumnChange,
+) -> Vec<String> {
     let mut statements = Vec::new();
 
     if let Some((_, new_type)) = &change.data_type {
@@ -161,22 +198,40 @@ fn modify_column_sql(table: &str, column_name: &str, change: &crate::types::Colu
         ));
     }
     if let Some((_, new_nullable)) = change.is_nullable {
-        let clause = if new_nullable { "DROP NOT NULL" } else { "SET NOT NULL" };
-        statements.push(format!("ALTER TABLE {} ALTER COLUMN {} {};", quote_ident(table), quote_ident(column_name), clause));
+        let clause = if new_nullable {
+            "DROP NOT NULL"
+        } else {
+            "SET NOT NULL"
+        };
+        statements.push(format!(
+            "ALTER TABLE {} ALTER COLUMN {} {};",
+            quote_ident(table),
+            quote_ident(column_name),
+            clause
+        ));
     }
     if let Some((_, new_default)) = &change.default_value {
         let clause = match new_default {
             Some(d) => format!("SET DEFAULT {d}"),
             None => "DROP DEFAULT".to_string(),
         };
-        statements.push(format!("ALTER TABLE {} ALTER COLUMN {} {};", quote_ident(table), quote_ident(column_name), clause));
+        statements.push(format!(
+            "ALTER TABLE {} ALTER COLUMN {} {};",
+            quote_ident(table),
+            quote_ident(column_name),
+            clause
+        ));
     }
 
     statements
 }
 
 fn quote_idents(names: &[String]) -> String {
-    names.iter().map(|n| quote_ident(n)).collect::<Vec<_>>().join(", ")
+    names
+        .iter()
+        .map(|n| quote_ident(n))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn quote_ident(name: &str) -> String {
@@ -227,14 +282,29 @@ mod tests {
         // Deliberately diff-ordered so the referencing table comes first — the FK
         // must still land after both CREATE TABLE statements.
         let ops = vec![
-            DiffOp::AddTable { name: "orders".into(), table: orders },
-            DiffOp::AddTable { name: "users".into(), table: users },
+            DiffOp::AddTable {
+                name: "orders".into(),
+                table: orders,
+            },
+            DiffOp::AddTable {
+                name: "users".into(),
+                table: users,
+            },
         ];
         let sql = to_sql(&ops);
 
-        let orders_create = sql.iter().position(|s| s.starts_with("CREATE TABLE \"orders\"")).unwrap();
-        let users_create = sql.iter().position(|s| s.starts_with("CREATE TABLE \"users\"")).unwrap();
-        let fk = sql.iter().position(|s| s.contains("ADD CONSTRAINT \"orders_user_id_fkey\"")).unwrap();
+        let orders_create = sql
+            .iter()
+            .position(|s| s.starts_with("CREATE TABLE \"orders\""))
+            .unwrap();
+        let users_create = sql
+            .iter()
+            .position(|s| s.starts_with("CREATE TABLE \"users\""))
+            .unwrap();
+        let fk = sql
+            .iter()
+            .position(|s| s.contains("ADD CONSTRAINT \"orders_user_id_fkey\""))
+            .unwrap();
 
         assert!(fk > orders_create);
         assert!(fk > users_create);
